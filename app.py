@@ -1,4 +1,3 @@
-# app.py (drop-in replacement for the template’s app.py)
 import os
 from flask import Flask, request, jsonify
 from google.cloud.run_v2 import JobsClient
@@ -13,8 +12,13 @@ jobs = JobsClient()
 def job_res(pid, region, name):
     return f"projects/{pid}/locations/{region}/jobs/{name}"
 
+@app.get("/")
+def index():
+    return jsonify({"ok": True, "hint": 'POST /run with {"source":"gs://..."}'}), 200
+
 @app.get("/healthz")
-def healthz(): return "ok", 200
+def healthz():
+    return "ok", 200
 
 @app.post("/run")
 def run():
@@ -27,7 +31,7 @@ def run():
         else:
             src = payload.get("source")
             if not src or not str(src).startswith("gs://"):
-                return jsonify({"error":"missing or invalid 'source' (gs://...)"}), 400
+                return jsonify({"error":"missing or invalid \"source\" (gs://...)"}), 400
             args = ["--source", str(src)]
         op = jobs.run_job(
             name=job_res(PROJECT_ID, REGION, JOB_NAME),
