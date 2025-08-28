@@ -1,57 +1,39 @@
-# Copyright 2021 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# app.py (drop-in replacement for the template’s app.py)
+import os
+from flask import Flask, request, jsonify
+from google.cloud.run_v2 import JobsClient
 
-import signal
-import sys
-from types import FrameType
-
-from flask import Flask
-
-from utils.logging import logger
+PROJECT_ID = os.getenv("PROJECT_ID")
+REGION     = os.getenv("REGION", "asia-southeast1")
+JOB_NAME   = os.getenv("JOB_NAME", "golf-analyzer-job")
 
 app = Flask(__name__)
+jobs = JobsClient()
 
+def job_res(pid, region, name):
+    return f"projects/{pid}/locations/{region}/jobs/{name}"
 
-@app.route("/")
-def hello() -> str:
-    # Use basic logging with custom fields
-    logger.info(logField="custom-entry", arbitraryField="custom-entry")
+@app.get("/healthz")
+def healthz(): return "ok", 200
 
-    # https://cloud.google.com/run/docs/logging#correlate-logs
-    logger.info("Child logger with trace Id.")
-
-    return "Hello, World!"
-
-
-def shutdown_handler(signal_int: int, frame: FrameType) -> None:
-    logger.info(f"Caught Signal {signal.strsignal(signal_int)}")
-
-    from utils.logging import flush
-
-    flush()
-
-    # Safely exit program
-    sys.exit(0)
-
-
-if __name__ == "__main__":
-    # Running application locally, outside of a Google Cloud Environment
-
-    # handles Ctrl-C termination
-    signal.signal(signal.SIGINT, shutdown_handler)
-
-    app.run(host="localhost", port=8080, debug=True)
-else:
-    # handles Cloud Run container termination
-    signal.signal(signal.SIGTERM, shutdown_handler)
+@app.post("/run")
+def run():
+    try:
+        if not PROJECT_ID:
+            return jsonify({"error":"PROJECT_ID env missing"}), 500
+        payload = request.get_json(silent=True) or {}
+        if "args" in payload and isinstance(payload["args"], list):
+            args = payload["args"]
+        else:
+            src = payload.get("source")
+            if not src or not str(src).startswith("gs://"):
+                return jsonify({"error":"missing or invalid 'source' (gs://...)"}), 400
+            args = ["--source", str(src)]
+        op = jobs.run_job(
+            name=job_res(PROJECT_ID, REGION, JOB_NAME),
+            overrides={"container_overrides":[{"args": args}]}
+        )
+        exec_name = getattr(getattr(op, "metadata", None), "name", None) or op.operation.name
+        return jsonify({"status":"accepted","job":JOB_NAME,"execution":exec_name}), 202
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
