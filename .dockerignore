@@ -26,3 +26,5 @@ venv/
 
 # Exclude git history and configuration.
 .gitignore
+__pycache__/
+*.py[cod]

@@ -66,22 +66,56 @@ def root_compat():
 
 @app.post("/run")
 def run():
+    """
+    POST JSON:
+    {
+      "source": "gs://video_storage_from_user/<user>/<session>/file.mp4",
+      "view": "fo" | "dtl",             # optional, default "fo"
+      "handedness": "right" | "left"    # optional, default "right"
+    }
+    """
     try:
         if not PROJECT_ID:
             return jsonify({"error":"PROJECT_ID env missing"}), 500
+
         payload = request.get_json(silent=True) or {}
-        if "args" in payload and isinstance(payload["args"], list):
-            args = payload["args"]
+
+        # Accept either explicit args[] or structured fields
+        if "args" in payload and isinstance(payload["args"], list) and payload["args"]:
+            # trust caller (but still ensure they’re strings)
+            args = [str(a) for a in payload["args"]]
         else:
-            src = payload.get("source")
-            if not src or not str(src).startswith("gs://"):
-                return jsonify({"error":"missing or invalid \"source\" (gs://...)"}), 400
-            args = ["--source", str(src)]
+            src  = (payload.get("source") or "").strip()
+            view = (payload.get("view") or "fo").lower()
+            hand = (payload.get("handedness") or "right").lower()
+
+            if not (src.startswith("gs://") and src.endswith(".mp4")):
+                return jsonify({"error": 'missing/invalid "source" (must be gs://... .mp4)'}), 400
+            if view not in ("fo", "dtl"):
+                return jsonify({"error": 'invalid "view" (must be "fo" or "dtl")'}), 400
+            if hand not in ("right", "left"):
+                return jsonify({"error": 'invalid "handedness" (must be "right" or "left")'}), 400
+
+            args = ["--source", src, "--view", view, "--handedness", hand]
+
+        # Trigger the job with container overrides
         op = jobs.run_job(
             name=job_res(PROJECT_ID, REGION, JOB_NAME),
-            overrides={"container_overrides":[{"args": args}]}
+            overrides={"container_overrides": [{"args": args}]}
         )
-        exec_name = getattr(getattr(op, "metadata", None), "name", None) or op.operation.name
-        return jsonify({"status":"accepted","job":JOB_NAME,"execution":exec_name}), 202
+
+        # Wait only for the Execution resource creation (not job completion)
+        exec_obj = op.result()
+        exec_name = getattr(exec_obj, "name", None) or getattr(getattr(op, "metadata", None), "name", None)
+
+        return jsonify({
+            "status": "accepted",
+            "job": JOB_NAME,
+            "region": REGION,
+            "execution": exec_name,
+            "args": args
+        }), 202
+
     except Exception as e:
+        # Return a clean error but keep details for debugging
         return jsonify({"error": str(e)}), 500
